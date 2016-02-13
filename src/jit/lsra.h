@@ -1,7 +1,6 @@
-//
-// Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
-//
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
 /*****************************************************************************/
 
 #ifndef _LSRA_H_
@@ -360,12 +359,12 @@ public:
     // than the one it was spilled from
     void            insertCopyOrReload(GenTreePtr tree, RefPosition* refPosition);
 
-#ifdef FEATURE_SIMD
+#if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
     // Insert code to save and restore the upper half of a vector that lives
     // in a callee-save register at the point of a call (the upper half is
     // not preserved).
     void            insertUpperVectorSaveAndReload(GenTreePtr tree, RefPosition* refPosition, BasicBlock* block);
-#endif // FEATURE_SIMD
+#endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
 
     // resolve along one block-block edge
     enum ResolveType { ResolveSplit, ResolveJoin, ResolveCritical, ResolveSharedCritical, ResolveTypeCount };
@@ -381,7 +380,7 @@ public:
                                   regNumber   outReg,
                                   regNumber   inReg);
 
-    void            handleOutoingCriticalEdges(BasicBlock*  block);
+    void            handleOutgoingCriticalEdges(BasicBlock*  block);
 
     void            resolveEdge (BasicBlock*      fromBlock,
                                  BasicBlock*      toBlock,
@@ -569,10 +568,18 @@ private:
                                              ArrayStack<LocationInfo> *stack,
                                              LsraLocation loc);
 
-#ifdef FEATURE_SIMD
+#if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
     VARSET_VALRET_TP buildUpperVectorSaveRefPositions(GenTree *tree, LsraLocation currentLoc);
     void             buildUpperVectorRestoreRefPositions(GenTree *tree, LsraLocation currentLoc, VARSET_VALARG_TP liveLargeVectors);
-#endif //FEATURE_SIMD
+#endif //FEATURE_PARTIAL_SIMD_CALLEE_SAVE
+
+#if defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+    // For AMD64 on SystemV machines. This method 
+    // is called as replacement for raUpdateRegStateForArg 
+    // that is used on Windows. On System V systems a struct can be passed
+    // partially using registers from the 2 register files.
+    void unixAmd64UpdateRegStateForArg(LclVarDsc* argDsc);
+#endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
     // Update reg state for an incoming register argument
     void            updateRegStateForArg(LclVarDsc* argDsc);
@@ -713,13 +720,14 @@ private:
     regNumber allocateBusyReg(Interval *current, RefPosition *refPosition);
     regNumber assignCopyReg(RefPosition * refPosition);
 
-    void assignPhysReg( RegRecord * physRegInterval, Interval * interval);
+    void checkAndAssignInterval(RegRecord * regRec, Interval * interval);
+    void assignPhysReg(RegRecord * regRec, Interval * interval);
     void assignPhysReg( regNumber reg, Interval * interval) { assignPhysReg(getRegisterRecord(reg), interval); }
 
-    void unassignPhysReg( RegRecord* reg, RefPosition* spillRefPosition);
+    void checkAndClearInterval(RegRecord * regRec, RefPosition* spillRefPosition);
+    void unassignPhysReg(RegRecord * regRec, RefPosition* spillRefPosition);
     void unassignPhysRegNoSpill( RegRecord* reg);
     void unassignPhysReg( regNumber reg) { unassignPhysReg(getRegisterRecord(reg), nullptr); }
-
 
     void spillInterval(Interval* interval, RefPosition* fromRefPosition, RefPosition* toRefPosition);
 
@@ -982,7 +990,7 @@ private:
     VARSET_TP           currentLiveVars;
     // Set of floating point variables to consider for callee-save registers.
     VARSET_TP           fpCalleeSaveCandidateVars;
-#ifdef FEATURE_SIMD
+#if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
 #if defined(_TARGET_AMD64_)
     static const var_types     LargeVectorType = TYP_SIMD32;
     static const var_types     LargeVectorSaveType = TYP_SIMD16;
@@ -997,8 +1005,7 @@ private:
     VARSET_TP           largeVectorVars;
     // Set of large vector (TYP_SIMD32 on AVX) variables to consider for callee-save registers.
     VARSET_TP           largeVectorCalleeSaveCandidateVars;
-#endif // FEATURE_SIMD
-    
+#endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
 };
 
 /*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -1255,9 +1262,9 @@ public:
     bool            RequiresRegister()
     {
         return (refType == RefTypeDef || refType == RefTypeUse
-#ifdef FEATURE_SIMD
+#if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
                || refType == RefTypeUpperVectorSaveDef || refType == RefTypeUpperVectorSaveUse
-#endif // FEATURE_SIMD
+#endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
                );
     }
 

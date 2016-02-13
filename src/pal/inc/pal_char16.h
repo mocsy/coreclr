@@ -1,7 +1,6 @@
-//
-// Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information. 
-//
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
 
 /*++
 
@@ -27,8 +26,11 @@ This file is used to define the wchar_t type as a 16-bit type on Unix.
 // __wchar_16_cpp__ instead of wchar_t. This is apparently not necessary under
 // vc++, for whom wchar_t is already a typedef instead of a built-in.
 
+#ifndef PAL_STDCPP_COMPAT
 #if defined (PLATFORM_UNIX) && defined(__GNUC__)
 #undef wchar_t
+#undef __WCHAR_TYPE__
+#define __WCHAR_TYPE__ __wchar_16_cpp__
 #define wchar_t __wchar_16_cpp__
 #endif // PLATFORM_UNIX
 
@@ -39,8 +41,12 @@ This file is used to define the wchar_t type as a 16-bit type on Unix.
 #if !defined(_WCHAR_T_DEFINED) || !defined(_MSC_VER)
 #if defined (PLATFORM_UNIX)
 #if defined(__cplusplus)
+#undef __WCHAR_TYPE__
+#define __WCHAR_TYPE__ char16_t
 typedef char16_t wchar_t;
 #else
+#undef __WCHAR_TYPE__
+#define __WCHAR_TYPE__ unsigned short
 typedef unsigned short wchar_t;
 #endif // __cplusplus
 #endif // PLATFORM_UNIX
@@ -48,4 +54,4 @@ typedef unsigned short wchar_t;
 #define _WCHAR_T_DEFINED
 #endif // !_WCHAR_T_DEFINED
 #endif // !_WCHAR_T_DEFINED || !_MSC_VER
-
+#endif // !PAL_STDCPP_COMPAT

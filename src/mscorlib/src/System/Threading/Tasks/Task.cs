@@ -1,5 +1,6 @@
-﻿// Copyright (c) Microsoft. All rights reserved.
-// Licensed under the MIT license. See LICENSE file in the project root for full license information.
+// Licensed to the .NET Foundation under one or more agreements.
+// The .NET Foundation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
 
 // =+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
 //
@@ -2329,7 +2330,7 @@ namespace System.Threading.Tasks
 
 
         /// <summary>
-        /// Final stage of the task completion code path. Notifies the parent (if any) that another of its childre are done, and runs continuations.
+        /// Final stage of the task completion code path. Notifies the parent (if any) that another of its children are done, and runs continuations.
         /// This function is only separated out from FinishStageTwo because these two operations are also needed to be called from CancellationCleanupLogic()
         /// </summary>
         internal void FinishStageThree()
@@ -3283,6 +3284,7 @@ namespace System.Threading.Tasks
         {
             internal SetOnInvokeMres() : base(false, 0) { }
             public void Invoke(Task completingTask) { Set(); }
+            public bool InvokeMayRunArbitraryCode { get { return false; } }
         }
 
         /// <summary>
@@ -3583,7 +3585,12 @@ namespace System.Threading.Tasks
             // Atomically store the fact that this task is completing.  From this point on, the adding of continuations will
             // result in the continuations being run/launched directly rather than being added to the continuation list.
             object continuationObject = Interlocked.Exchange(ref m_continuationObject, s_taskCompletionSentinel);
-            TplEtwProvider.Log.RunningContinuation(Id, continuationObject);
+            TplEtwProvider etw = TplEtwProvider.Log;
+            bool tplEtwProviderLoggingEnabled = etw.IsEnabled();
+            if (tplEtwProviderLoggingEnabled)
+            {
+                etw.RunningContinuation(Id, continuationObject);
+            }
 
             // If continuationObject == null, then we don't have any continuations to process
             if (continuationObject != null)
@@ -3610,7 +3617,14 @@ namespace System.Threading.Tasks
                 ITaskCompletionAction singleTaskCompletionAction = continuationObject as ITaskCompletionAction;
                 if (singleTaskCompletionAction != null)
                 {
-                    singleTaskCompletionAction.Invoke(this);
+                    if (bCanInlineContinuations || !singleTaskCompletionAction.InvokeMayRunArbitraryCode)
+                    {
+                        singleTaskCompletionAction.Invoke(this);
+                    }
+                    else
+                    {
+                        ThreadPool.UnsafeQueueCustomWorkItem(new CompletionActionInvoker(singleTaskCompletionAction, this), forceGlobal: false);
+                    }
                     LogFinishCompletionNotification();
                     return;
                 }
@@ -3649,7 +3663,10 @@ namespace System.Threading.Tasks
                     var tc = continuations[i] as StandardTaskContinuation;
                     if (tc != null && (tc.m_options & TaskContinuationOptions.ExecuteSynchronously) == 0)
                     {
-                        TplEtwProvider.Log.RunningContinuationList(Id, i, tc);
+                        if (tplEtwProviderLoggingEnabled)
+                        {
+                            etw.RunningContinuationList(Id, i, tc);
+                        }
                         continuations[i] = null; // so that we can skip this later
                         tc.Run(this, bCanInlineContinuations);
                     }
@@ -3663,7 +3680,10 @@ namespace System.Threading.Tasks
                     object currentContinuation = continuations[i];
                     if (currentContinuation == null) continue;
                     continuations[i] = null; // to enable free'ing up memory earlier
-                    TplEtwProvider.Log.RunningContinuationList(Id, i, currentContinuation);
+                    if (tplEtwProviderLoggingEnabled)
+                    {
+                        etw.RunningContinuationList(Id, i, currentContinuation);
+                    }
 
                     // If the continuation is an Action delegate, it came from an await continuation,
                     // and we should use AwaitTaskContinuation to run it.
@@ -3687,7 +3707,15 @@ namespace System.Threading.Tasks
                         {
                             Contract.Assert(currentContinuation is ITaskCompletionAction, "Expected continuation element to be Action, TaskContinuation, or ITaskContinuationAction");
                             var action = (ITaskCompletionAction)currentContinuation;
-                            action.Invoke(this);
+
+                            if (bCanInlineContinuations || !action.InvokeMayRunArbitraryCode)
+                            {
+                                action.Invoke(this);
+                            }
+                            else
+                            {
+                                ThreadPool.UnsafeQueueCustomWorkItem(new CompletionActionInvoker(action, this), forceGlobal: false);
+                            }
                         }
                     }
                 }
@@ -5208,6 +5236,8 @@ namespace System.Threading.Tasks
                 if (Interlocked.Decrement(ref _count) == 0) Set();
                 Contract.Assert(_count >= 0, "Count should never go below 0");
             }
+
+            public bool InvokeMayRunArbitraryCode { get { return false; } }
         }
 
         /// <summary>
@@ -6157,6 +6187,8 @@ namespace System.Threading.Tasks
                 Contract.Assert(m_count >= 0, "Count should never go below 0");
             }
 
+            public bool InvokeMayRunArbitraryCode { get { return true; } }
+
             /// <summary>
             /// Returns whether we should notify the debugger of a wait completion.  This returns 
             /// true iff at least one constituent task has its bit set.
@@ -6407,6 +6439,8 @@ namespace System.Threading.Tasks
                 Contract.Assert(m_count >= 0, "Count should never go below 0");
             }
 
+            public bool InvokeMayRunArbitraryCode { get { return true; } }
+
             /// <summary>
             /// Returns whether we should notify the debugger of a wait completion.  This returns true
             /// iff at least one constituent task has its bit set.
@@ -6648,6 +6682,30 @@ namespace System.Threading.Tasks
         }
 
 
+    }
+
+    internal sealed class CompletionActionInvoker : IThreadPoolWorkItem
+    {
+        private readonly ITaskCompletionAction m_action;
+        private readonly Task m_completingTask;
+
+        internal CompletionActionInvoker(ITaskCompletionAction action, Task completingTask)
+        {
+            m_action = action;
+            m_completingTask = completingTask;
+        }
+
+        [SecurityCritical]
+        void IThreadPoolWorkItem.ExecuteWorkItem()
+        {
+            m_action.Invoke(m_completingTask);
+        }
+
+        [SecurityCritical]
+        void IThreadPoolWorkItem.MarkAborted(ThreadAbortException tae)
+        {
+            /* NOP */
+        }
     }
 
     // Proxy class for better debugging experience
@@ -7072,7 +7130,18 @@ namespace System.Threading.Tasks
     // TaskFactory.CompleteOnCountdownPromise<T>, and TaskFactory.CompleteOnInvokePromise.
     internal interface ITaskCompletionAction
     {
+        /// <summary>Invoked to run the completion action.</summary>
         void Invoke(Task completingTask);
+
+        /// <summary>
+        /// Some completion actions are considered internal implementation details of tasks,
+        /// using the continuation mechanism only for performance reasons.  Such actions perform
+        /// known quantities and types of work, and can be invoked safely as a continuation even
+        /// if the system wants to prevent arbitrary continuations from running synchronously.
+        /// This should only return false for a limited set of implementations where a small amount
+        /// of work is guaranteed to be performed, e.g. setting a ManualResetEventSlim.
+        /// </summary>
+        bool InvokeMayRunArbitraryCode { get; }
     }
 
     // This class encapsulates all "unwrap" logic, and also implements ITaskCompletionAction,
@@ -7287,7 +7356,7 @@ namespace System.Threading.Tasks
             }
         }
 
+        public bool InvokeMayRunArbitraryCode { get { return true; } }
     }
-
 
 }
